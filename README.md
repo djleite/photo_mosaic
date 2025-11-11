@@ -1,1 +1,1 @@
-Go to www.photomosaicdrdjl.streamlit.app
+Go to https://photomosaicdrdjl.streamlit.app/
