@@ -31,6 +31,9 @@ def image_variance(image: Image.Image):
     arr = np.array(image)
     return arr.var() if arr.ndim == 2 else arr[:, :, :3].var()
 
+from PIL import Image
+import numpy as np
+
 def split_into_diverse_regions(img: Image.Image, x: int, tile_size: int, grayscale: bool):
     regions = []
     w, h = img.size
@@ -38,17 +41,43 @@ def split_into_diverse_regions(img: Image.Image, x: int, tile_size: int, graysca
     step_y = max(tile_size // 2, 1)
     candidates = []
 
+    # Step 1: Extract all candidate tiles and compute variance and mean color
     for y in range(0, h - tile_size + 1, step_y):
         for x_ in range(0, w - tile_size + 1, step_x):
             patch = img.crop((x_, y, x_ + tile_size, y + tile_size))
-            var = image_variance(patch)
-            candidates.append((var, patch))
+            patch_array = np.array(patch)
+            # Compute internal variance (for homogeneity)
+            var = np.var(patch_array)
+            # Compute mean color of the patch
+            mean_color = np.mean(patch_array.reshape(-1, patch_array.shape[-1]), axis=0)
+            candidates.append((var, mean_color, patch))
 
-    candidates.sort(key=lambda v: v[0], reverse=True)
-    for _, patch in candidates[:x]:
-        patch = patch.convert('L' if grayscale else 'RGB').resize((tile_size, tile_size))
-        regions.append(patch)
-    return regions
+    # Step 2: Sort by increasing variance (more homogeneous first)
+    candidates.sort(key=lambda v: v[0])
+
+    # Step 3: Select x tiles maximizing diversity between tiles
+    selected = []
+    selected_colors = []
+
+    for var, mean_color, patch in candidates:
+        if len(selected) == 0:
+            # Pick the most homogeneous tile first
+            selected.append(patch)
+            selected_colors.append(mean_color)
+        else:
+            # Compute distance from already selected tiles
+            distances = [np.linalg.norm(mean_color - sc) for sc in selected_colors]
+            if min(distances) > 30:  # tweak threshold for "between-tile diversity"
+                selected.append(patch)
+                selected_colors.append(mean_color)
+        if len(selected) >= x:
+            break
+
+    # Step 4: Convert and resize tiles
+    for i in range(len(selected)):
+        selected[i] = selected[i].convert('L' if grayscale else 'RGB').resize((tile_size, tile_size))
+
+    return selected
 
 # ------------------------------
 # Tile Loading
