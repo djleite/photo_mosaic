@@ -168,7 +168,7 @@ grid_height = st.number_input("Grid Height (tiles)", min_value=1, max_value=200,
 reuse_limit = st.number_input("Tile Reuse Limit", min_value=1, max_value=100, value=10)
 blend = st.slider("Color Blend Ratio", 0.0, 1.0, 0.3, 0.05)
 grayscale = st.checkbox("Grayscale Mode", value=False)
-subregions = st.number_input("Diverse Subregions per Tile", min_value=1, max_value=10, value=3)
+subregions = st.number_input("Diverse Subregions per Tile", min_value=1, max_value=20, value=3)
 border_px = st.number_input("Tile Border Width", min_value=0, max_value=50, value=0)
 border_color = st.color_picker("Tile Border Color", value="#FFFFFF")
 
