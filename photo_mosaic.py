@@ -31,9 +31,6 @@ def image_variance(image: Image.Image):
     arr = np.array(image)
     return arr.var() if arr.ndim == 2 else arr[:, :, :3].var()
 
-from PIL import Image
-import numpy as np
-
 def split_into_diverse_regions(img: Image.Image, x: int, tile_size: int, grayscale: bool):
     regions = []
     w, h = img.size
