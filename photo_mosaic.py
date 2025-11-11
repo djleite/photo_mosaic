@@ -2,21 +2,19 @@
 Photo Mosaic Generator - Streamlit Web Version
 ----------------------------------------------
 - Upload target image and tiles (multiple files or ZIP)
-- Supports all options from CLI: tile size, grid size, blend, grayscale, borders
-- Runs fully in the browser with Python backend
-- Parallel processing retained for speed
+- Supports all options: tile size, grid size, blend, grayscale, borders
+- Robust handling of uploaded files and ZIPs
+- Parallel processing for speed
 """
 
 import streamlit as st
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 import numpy as np
 from scipy.spatial import KDTree
 import random
 from io import BytesIO
 from zipfile import ZipFile
 from multiprocessing import Pool, cpu_count
-from tqdm import tqdm
-import os
 
 # ------------------------------
 # Utility Functions
@@ -24,7 +22,7 @@ import os
 
 def average_color(image: Image.Image):
     arr = np.array(image)
-    if len(arr.shape) == 3:  # RGB
+    if len(arr.shape) == 3:
         return arr[:, :, :3].mean(axis=(0, 1))
     else:
         return arr.mean()
@@ -56,26 +54,40 @@ def split_into_diverse_regions(img: Image.Image, x: int, tile_size: int, graysca
 # Tile Loading
 # ------------------------------
 
-def load_tiles_from_files(tile_files, tile_size, grayscale, subregions, border_px, border_color):
-    tiles, colors = [], []
+def load_uploaded_tiles(tile_files, tile_size, grayscale, subregions, border_px, border_color):
+    all_tiles = []
 
     for file in tile_files:
+        name = file.name.lower()
         try:
-            img = Image.open(file).convert('L' if grayscale else 'RGB')
-            sub_imgs = split_into_diverse_regions(img, subregions, tile_size, grayscale)
-            for patch in sub_imgs:
-                if border_px > 0:
-                    patch = ImageOps.expand(patch, border=border_px, fill=border_color)
-                tiles.append(patch)
-                colors.append(average_color(patch))
+            if name.endswith(".zip"):
+                zip_bytes = BytesIO(file.read())
+                with ZipFile(zip_bytes) as zf:
+                    for fname in zf.namelist():
+                        if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp')):
+                            try:
+                                with zf.open(fname) as f:
+                                    tile = Image.open(BytesIO(f.read())).convert('RGB')
+                                    sub_imgs = split_into_diverse_regions(tile, subregions, tile_size, grayscale)
+                                    for patch in sub_imgs:
+                                        if border_px > 0:
+                                            patch = ImageOps.expand(patch, border=border_px, fill=border_color)
+                                        all_tiles.append(patch)
+                            except UnidentifiedImageError:
+                                print(f"Skipping invalid image in ZIP: {fname}")
+            elif name.endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp')):
+                tile = Image.open(BytesIO(file.read())).convert('RGB')
+                sub_imgs = split_into_diverse_regions(tile, subregions, tile_size, grayscale)
+                for patch in sub_imgs:
+                    if border_px > 0:
+                        patch = ImageOps.expand(patch, border=border_px, fill=border_color)
+                    all_tiles.append(patch)
+            else:
+                print(f"Skipping unsupported file: {file.name}")
         except Exception as e:
-            print(f"Skipping {file.name if hasattr(file, 'name') else file}: {e}")
+            print(f"Error processing {file.name}: {e}")
 
-    colors = np.array(colors)
-    if grayscale and colors.ndim == 1:
-        colors = colors[:, np.newaxis]
-
-    return tiles, colors
+    return all_tiles
 
 # ------------------------------
 # Mosaic Building
@@ -104,48 +116,52 @@ def process_block(args):
         tile = Image.blend(tile, tint, blend)
     return (x, y, tile)
 
-def build_mosaic(target_img, tile_files, tile_size=50, grid_width=50, grid_height=50,
-                 reuse_limit=10, blend=0.3, grayscale=False, subregions=3,
-                 border_px=0, border_color='white'):
+def build_mosaic(target_img, tiles, tile_size=50, grid_width=50, grid_height=50,
+                 reuse_limit=10, blend=0.3, grayscale=False):
     
-    tiles, colors = load_tiles_from_files(tile_files, tile_size, grayscale, subregions, border_px, border_color)
     if len(tiles) == 0:
         raise ValueError("No valid tiles found.")
+
+    colors = np.array([average_color(t) for t in tiles])
+    if grayscale and colors.ndim == 1:
+        colors = colors[:, np.newaxis]
 
     tree = KDTree(colors)
     used_counts = np.zeros(len(tiles), dtype=int)
 
     target_img = target_img.convert('L' if grayscale else 'RGB')
-    target_img = target_img.resize((grid_width * (tile_size + 2 * border_px),
-                                    grid_height * (tile_size + 2 * border_px)))
+    target_img = target_img.resize((grid_width * tile_size, grid_height * tile_size))
     target_array = np.array(target_img)
     mosaic = Image.new('L' if grayscale else 'RGB', target_img.size)
     tasks = []
 
-    for y in range(0, target_img.size[1], tile_size + 2 * border_px):
-        for x in range(0, target_img.size[0], tile_size + 2 * border_px):
+    for y in range(0, target_img.size[1], tile_size):
+        for x in range(0, target_img.size[0], tile_size):
             block = target_array[y:y + tile_size, x:x + tile_size]
             tasks.append((x, y, block, tree, tiles, used_counts, blend, reuse_limit, grayscale))
 
-    # Use parallel processing
     for x, y, tile in Pool(cpu_count()).imap_unordered(process_block, tasks):
         mosaic.paste(tile, (x, y))
 
     return mosaic
 
 # ------------------------------
-# Streamlit Web App
+# Streamlit UI
 # ------------------------------
 
-st.title("🖼️ Photo Mosaic Generator")
+st.title("Photo Mosaic Generator")
 
 # Upload target image
 target_file = st.file_uploader("Upload Target Image", type=["jpg", "jpeg", "png", "bmp", "webp"])
 
 # Upload tiles (multiple files or zip)
-tile_files = st.file_uploader("Upload Tiles (Images or ZIP)", type=["jpg", "jpeg", "png", "bmp", "webp", "zip"], accept_multiple_files=True)
+tile_files = st.file_uploader(
+    "Upload Tiles (Images or ZIP)", 
+    type=["jpg", "jpeg", "png", "bmp", "webp", "zip"], 
+    accept_multiple_files=True
+)
 
-# Options
+# Mosaic options
 tile_size = st.number_input("Tile Size (px)", min_value=10, max_value=500, value=50)
 grid_width = st.number_input("Grid Width (tiles)", min_value=1, max_value=200, value=50)
 grid_height = st.number_input("Grid Height (tiles)", min_value=1, max_value=200, value=50)
@@ -160,27 +176,24 @@ if st.button("Generate Mosaic"):
     if not target_file or not tile_files:
         st.error("Please upload both target image and tile files.")
     else:
-        all_tiles = []
-
-        # Extract tiles from zip files
-        for file in tile_files:
-            if file.name.lower().endswith(".zip"):
-                with ZipFile(file) as zf:
-                    for fname in zf.namelist():
-                        if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp')):
-                            with zf.open(fname) as f:
-                                all_tiles.append(Image.open(f).convert('RGB'))
-            else:
-                all_tiles.append(Image.open(file).convert('RGB'))
-
-        with st.spinner("Building mosaic... this may take a few minutes ⏳"):
-            mosaic = build_mosaic(target_file, all_tiles, tile_size, grid_width, grid_height,
-                                  reuse_limit, blend, grayscale, subregions, border_px, border_color)
+        # Load tiles
+        with st.spinner("Loading tiles..."):
+            tiles = load_uploaded_tiles(tile_files, tile_size, grayscale, subregions, border_px, border_color)
         
-        st.success("Mosaic generated!")
-        st.image(mosaic, caption="Generated Mosaic", use_column_width=True)
+        st.write(f"Loaded {len(tiles)} tile patches")
+        if len(tiles) == 0:
+            st.error("No valid tiles were loaded! Check your files.")
+        else:
+            # Build mosaic
+            with st.spinner("Building mosaic... this may take a few minutes ⏳"):
+                target_img = Image.open(BytesIO(target_file.read()))
+                mosaic = build_mosaic(target_img, tiles, tile_size, grid_width, grid_height,
+                                      reuse_limit, blend, grayscale)
+            
+            st.success("Mosaic generated!")
+            st.image(mosaic, caption="Generated Mosaic", use_column_width=True)
 
-        # Allow download
-        buf = BytesIO()
-        mosaic.save(buf, format="PNG")
-        st.download_button("Download Mosaic", data=buf, file_name="mosaic.png", mime="image/png")
+            # Download button
+            buf = BytesIO()
+            mosaic.save(buf, format="PNG")
+            st.download_button("Download Mosaic", data=buf, file_name="mosaic.png", mime="image/png")
